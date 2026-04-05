@@ -36,6 +36,10 @@ class RealOrcaRunner(BaseRunner):
                 run_id=run_definition.run_id,
                 coordinates=coordinates,
                 orca_settings=self.orca_settings,
+                method=run_definition.method,
+                multiplicity=run_definition.multiplicity,
+                calculation_type=run_definition.calculation_type,
+                extra_blocks=run_definition.extra_blocks,
             ),
             encoding="utf-8",
         )
@@ -118,6 +122,10 @@ class MockOrcaRunner(BaseRunner):
                 run_id=run_definition.run_id,
                 coordinates=coordinates,
                 orca_settings=self.orca_settings,
+                method=run_definition.method,
+                multiplicity=run_definition.multiplicity,
+                calculation_type=run_definition.calculation_type,
+                extra_blocks=run_definition.extra_blocks,
             ),
             encoding="utf-8",
         )
@@ -150,11 +158,18 @@ class MockOrcaRunner(BaseRunner):
     def _mock_energy(self, run_definition: RunDefinition) -> float:
         rng = random.Random(run_definition.seed)
         deviation = run_definition.distance - self.orca_settings.mock_optimal_distance
-        stage_penalty = 0.005 if run_definition.stage == "coarse" else 0.002
+        multiplicity_penalty = 0.02 * abs(
+            run_definition.multiplicity - self.orca_settings.mock_optimal_multiplicity
+        )
+        if run_definition.calculation_type == "single_point":
+            stage_penalty = -0.012
+        else:
+            stage_penalty = 0.005 if run_definition.stage == "coarse" else 0.002
         noise_scale = self.orca_settings.mock_noise_scale
         return (
             self.orca_settings.mock_base_energy
             + 0.45 * deviation * deviation
+            + multiplicity_penalty
             + stage_penalty
             + rng.uniform(-noise_scale, noise_scale)
         )

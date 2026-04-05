@@ -7,9 +7,11 @@ Containerized service for automated ORCA geometry optimization campaigns on a 12
 - Generates starting coordinates for a B12 cluster from a named template or a custom coordinate file.
 - Scans a list of inter-atomic distances.
 - Runs repeated ORCA geometry optimizations for each distance.
+- Runs each distance across multiple spin multiplicities.
 - Stores per-run inputs, outputs, energies, and geometries in isolated folders.
 - Writes `summary.csv`, `best.json`, and `best.xyz` incrementally so partial progress is not lost.
 - Optionally performs a refinement sweep around the best coarse distance.
+- Optionally performs higher-accuracy single-point calculations on the best optimized structures.
 
 ## Repository layout
 
@@ -36,7 +38,8 @@ Main environment variables:
 - `COORDINATE_JITTER`
 - `BASE_RANDOM_SEED`
 - `CHARGE`
-- `MULTIPLICITY`
+- `MULTIPLICITIES`
+- `MULTIPLICITY` as a legacy single-value fallback
 - `ORCA_BACKEND`
 - `ORCA_BINARY`
 - `ORCA_METHOD`
@@ -45,6 +48,11 @@ Main environment variables:
 - `REFINE_ENABLED`
 - `REFINE_STEP`
 - `REFINE_POINTS`
+- `SINGLE_POINT_ENABLED`
+- `SINGLE_POINT_TOP_N`
+- `SINGLE_POINT_METHOD`
+- `DELETE_PATTERNS_AFTER_SUCCESS`
+- `DELETE_NON_BEST_PATTERNS`
 
 Example local mock run:
 
@@ -101,7 +109,16 @@ Each run directory contains:
 - `optimized.xyz` when available
 - `result.json`
 
+`summary.csv` also includes:
+
+- `multiplicity`
+- `calculation_type` (`optimization` or `single_point`)
+- `method`
+- `source_run_id` for single-point jobs
+
 ## GitHub Actions
+
+Workflow file: `.github/workflows/ci.yml`
 
 The workflow always:
 
@@ -118,15 +135,43 @@ Expected secret format:
 
 ## Railway deployment
 
+Recommended production path:
+
 1. Push the repository to GitHub.
-2. Ensure your default Docker build uses the final `runtime` stage.
-3. In Railway, deploy the repository as a Dockerfile-based service.
+2. Let GitHub Actions build the licensed `runtime` image and publish it to GHCR.
+3. In Railway, create a service from the published image in GHCR, not from the repository Dockerfile.
 4. Attach a persistent volume and mount it at `/app/data`.
 5. Set service variables such as:
    - `RESULTS_ROOT=/app/data`
    - `CAMPAIGN_NAME=b12-production`
    - `ORCA_BINARY=/opt/orca/orca`
+   - `MULTIPLICITIES=1,3,5`
 6. Redeploy after changing configuration.
+
+Why this path is preferred:
+
+- the public repository does not contain ORCA binaries
+- the `runtime` Docker target requires a licensed ORCA bundle in `vendor/orca/`
+- GitHub Actions can restore that bundle from a secret and publish a ready-to-run image
+- Railway can then consume the finished image directly without rebuilding ORCA-dependent layers
+
+Repository-based Railway Docker builds are only appropriate if your private source already includes the licensed ORCA payload at build time.
+
+## Storage policy
+
+Cleanup is explicit and configurable.
+
+- `delete_patterns_after_success` removes heavy ORCA scratch/wavefunction files immediately after each successful run.
+- `delete_non_best_patterns` applies only after the best result is known and only to non-best runs.
+- By default, reproducibility artifacts are kept: `.inp`, `.out`, `initial.xyz`, `optimized.xyz`, `result.json`, `summary.csv`, `best.json`, `best.xyz`.
+
+If you need a more aggressive storage profile on Railway, set for example:
+
+```toml
+[cleanup]
+delete_patterns_after_success = ["*.tmp", "*.gbw", "*.densities", "*.engrad", "*.hess"]
+delete_non_best_patterns = ["optimized.xyz"]
+```
 
 The provided `railway.json` keeps the restart policy at `ON_FAILURE`, which allows the service to resume after crashes while avoiding a loop after a successful exit.
 

@@ -32,14 +32,46 @@ class OrcaSettings:
     binary: str = "orca"
     method: str = "R2SCAN-3C Opt TightSCF"
     charge: int = 0
-    multiplicity: int = 1
+    multiplicities: tuple[int, ...] = (1,)
     processes: int = 2
     maxcore_mb: int = 1500
     geom_max_iterations: int = 200
     extra_blocks: str = ""
     mock_optimal_distance: float = 2.45
+    mock_optimal_multiplicity: int = 1
     mock_base_energy: float = -24.0
     mock_noise_scale: float = 0.0005
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SinglePointSettings:
+    enabled: bool = True
+    top_n: int = 3
+    method: str = "PBE0 D4 def2-TZVP def2/J RIJCOSX TightSCF"
+    extra_blocks: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CleanupSettings:
+    delete_patterns_after_success: tuple[str, ...] = (
+        "*.tmp",
+        "*.gbw",
+        "*.densities",
+        "*.cis",
+        "*.engrad",
+        "*.hess",
+        "*.ges",
+        "*.prop",
+        "*.property.txt",
+        "*.trj",
+    )
+    delete_non_best_patterns: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -61,6 +93,8 @@ class CampaignConfig:
     force_rerun: bool
     orca: OrcaSettings
     refinement: RefinementSettings
+    single_point: SinglePointSettings
+    cleanup: CleanupSettings
 
     @property
     def campaign_dir(self) -> Path:
@@ -80,10 +114,15 @@ class CampaignConfig:
 class RunDefinition:
     run_id: str
     stage: str
+    calculation_type: str
+    method: str
+    extra_blocks: str
     distance: float
+    multiplicity: int
     repeat_index: int
     seed: int
     run_dir: Path
+    source_run_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from orca_cluster_service.models import CampaignConfig, OrcaSettings, RefinementSettings
+from orca_cluster_service.models import (
+    CampaignConfig,
+    CleanupSettings,
+    OrcaSettings,
+    RefinementSettings,
+    SinglePointSettings,
+)
 from orca_cluster_service.orchestrator import (
     CampaignOrchestrator,
     close_logging,
@@ -39,16 +45,24 @@ class MockCampaignTests(unittest.TestCase):
                     binary="orca",
                     method="R2SCAN-3C Opt TightSCF",
                     charge=0,
-                    multiplicity=1,
+                    multiplicities=(1, 3, 5),
                     processes=2,
                     maxcore_mb=512,
                     geom_max_iterations=100,
                     extra_blocks="",
                     mock_optimal_distance=2.45,
+                    mock_optimal_multiplicity=3,
                     mock_base_energy=-24.0,
                     mock_noise_scale=0.0,
                 ),
                 refinement=RefinementSettings(enabled=True, step=0.1, points=1),
+                single_point=SinglePointSettings(
+                    enabled=True,
+                    top_n=2,
+                    method="PBE0 D4 def2-TZVP def2/J RIJCOSX TightSCF",
+                    extra_blocks="",
+                ),
+                cleanup=CleanupSettings(),
             )
             configure_logging(config.campaign_dir)
             try:
@@ -68,11 +82,14 @@ class MockCampaignTests(unittest.TestCase):
 
                 with summary_path.open("r", encoding="utf-8", newline="") as handle:
                     rows = list(csv.DictReader(handle))
-                self.assertEqual(len(rows), 14)
+                self.assertEqual(len(rows), 44)
 
                 payload = json.loads(best_json_path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["status"], "ok")
-                self.assertIn(payload["best_run"]["distance"], {2.4, 2.5})
+                self.assertEqual(payload["selection_basis"], "single_point_energy")
+                self.assertEqual(payload["best_run"]["calculation_type"], "single_point")
+                self.assertEqual(payload["best_run"]["multiplicity"], 3)
+                self.assertIn(payload["best_run"]["distance"], {2.4, 2.6})
             finally:
                 close_logging()
 

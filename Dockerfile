@@ -1,5 +1,9 @@
 FROM ubuntu:24.04 AS base
 
+# Production images with real ORCA are expected to be built in CI with a licensed
+# ORCA bundle restored into vendor/orca/. The runtime target intentionally depends
+# on that bundle and is meant for GHCR publication, not for public repo-only builds.
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}"

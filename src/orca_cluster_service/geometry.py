@@ -34,6 +34,26 @@ def write_xyz(path: Path, coordinates: list[AtomCoordinate], comment: str) -> No
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def read_xyz(path: Path) -> list[AtomCoordinate]:
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(lines) < 3:
+        raise ValueError(f"XYZ file is too short: {path}")
+    coordinates: list[AtomCoordinate] = []
+    for line in lines[2:]:
+        parts = line.split()
+        if len(parts) < 4:
+            raise ValueError(f"Invalid XYZ line in {path}: {line}")
+        coordinates.append(
+            AtomCoordinate(
+                element=parts[0],
+                x=float(parts[1]),
+                y=float(parts[2]),
+                z=float(parts[3]),
+            )
+        )
+    return coordinates
+
+
 def _load_template_points(
     *,
     num_atoms: int,

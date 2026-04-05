@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+import shutil
 
 from .config import load_config
-from .geometry import build_geometry
+from .geometry import build_geometry, read_xyz
 from .io_utils import atomic_write_json, ensure_directory, read_json, write_csv
 from .models import CampaignConfig, RunDefinition
 from .runner import build_runner
@@ -26,19 +26,28 @@ class CampaignOrchestrator:
         self._write_config_snapshot()
         records = self._load_existing_records()
 
-        coarse_runs = self._build_run_definitions("coarse", self.config.distances, seed_offset=0)
-        for run_definition in coarse_runs:
+        for run_definition in self._build_optimization_runs("coarse", self.config.distances, seed_offset=0):
             self._execute_run(run_definition, records)
 
-        best_record = self._select_best_record(records)
-        if self.config.refinement.enabled and best_record is not None:
-            refine_distances = self._build_refinement_distances(float(best_record["distance"]))
-            refine_runs = self._build_run_definitions("refine", refine_distances, seed_offset=100000)
-            for run_definition in refine_runs:
+        best_optimization = self._select_best_record(records, calculation_type="optimization")
+        if self.config.refinement.enabled and best_optimization is not None:
+            refine_distances = self._build_refinement_distances(float(best_optimization["distance"]))
+            for run_definition in self._build_optimization_runs(
+                "refine", refine_distances, seed_offset=100000
+            ):
+                self._execute_run(run_definition, records)
+
+        if self.config.single_point.enabled:
+            for run_definition in self._build_single_point_runs(records, seed_offset=200000):
                 self._execute_run(run_definition, records)
 
         self._persist_campaign_outputs(records)
-        return 0 if self._select_best_record(records) else 1
+        best_record = self._select_best_record(records)
+        if best_record is not None:
+            self._cleanup_non_best_runs(records, best_record["run_id"])
+            self._persist_campaign_outputs(records)
+
+        return 0 if best_record else 1
 
     def _execute_run(self, run_definition: RunDefinition, records: dict[str, dict]) -> None:
         result_path = run_definition.run_dir / "result.json"
@@ -53,14 +62,76 @@ class CampaignOrchestrator:
 
         ensure_directory(run_definition.run_dir)
         LOGGER.info(
-            "Running %s | stage=%s distance=%.4f repeat=%s",
+            "Running %s | type=%s stage=%s multiplicity=%s distance=%.4f repeat=%s",
             run_definition.run_id,
+            run_definition.calculation_type,
             run_definition.stage,
+            run_definition.multiplicity,
             run_definition.distance,
             run_definition.repeat_index,
         )
 
-        coordinates = build_geometry(
+        try:
+            coordinates = self._resolve_coordinates(run_definition, records)
+            execution = self.runner.run(run_definition, coordinates)
+            record = {
+                "run_id": run_definition.run_id,
+                "stage": run_definition.stage,
+                "calculation_type": run_definition.calculation_type,
+                "method": run_definition.method,
+                "distance": run_definition.distance,
+                "multiplicity": run_definition.multiplicity,
+                "repeat_index": run_definition.repeat_index,
+                "seed": run_definition.seed,
+                "source_run_id": run_definition.source_run_id or "",
+                "status": execution.status,
+                "exit_code": execution.exit_code,
+                "energy_hartree": execution.energy_hartree,
+                "terminated_normally": execution.terminated_normally,
+                "runtime_seconds": round(execution.runtime_seconds, 6),
+                "run_dir": str(run_definition.run_dir.relative_to(self.campaign_dir)),
+                "input_file": self._relative_path(execution.input_path),
+                "output_file": self._relative_path(execution.output_path),
+                "initial_xyz": self._relative_path(execution.initial_xyz_path),
+                "optimized_xyz": self._relative_path(execution.optimized_xyz_path),
+                "error": execution.error or "",
+                "updated_at": datetime.now(UTC).isoformat(),
+                "accuracy_level": self._accuracy_level(run_definition.calculation_type),
+            }
+            if execution.status == "success":
+                self._cleanup_run_artifacts(
+                    run_definition.run_dir, self.config.cleanup.delete_patterns_after_success
+                )
+        except Exception as exc:
+            record = self._build_failed_record(run_definition, str(exc))
+
+        atomic_write_json(result_path, record)
+        records[run_definition.run_id] = record
+        self._persist_campaign_outputs(records)
+        LOGGER.info(
+            "Completed %s | status=%s energy=%s",
+            run_definition.run_id,
+            record["status"],
+            record["energy_hartree"],
+        )
+
+    def _resolve_coordinates(
+        self, run_definition: RunDefinition, records: dict[str, dict]
+    ) -> list:
+        if run_definition.source_run_id:
+            source_record = records.get(run_definition.source_run_id)
+            if source_record is None:
+                raise ValueError(
+                    f"Source run '{run_definition.source_run_id}' was not found for {run_definition.run_id}."
+                )
+            geometry_relative = source_record.get("optimized_xyz") or source_record.get("initial_xyz")
+            if not geometry_relative:
+                raise ValueError(
+                    f"Source run '{run_definition.source_run_id}' does not have geometry for {run_definition.run_id}."
+                )
+            return read_xyz(self.campaign_dir / geometry_relative)
+
+        return build_geometry(
             num_atoms=self.config.num_atoms,
             element=self.config.element,
             template_name=self.config.geometry_template,
@@ -68,39 +139,6 @@ class CampaignOrchestrator:
             jitter=self.config.coordinate_jitter,
             seed=run_definition.seed,
             coordinate_template_file=self.config.coordinate_template_file,
-        )
-        execution = self.runner.run(run_definition, coordinates)
-        record = {
-            "run_id": run_definition.run_id,
-            "stage": run_definition.stage,
-            "distance": run_definition.distance,
-            "repeat_index": run_definition.repeat_index,
-            "seed": run_definition.seed,
-            "status": execution.status,
-            "exit_code": execution.exit_code,
-            "energy_hartree": execution.energy_hartree,
-            "terminated_normally": execution.terminated_normally,
-            "runtime_seconds": round(execution.runtime_seconds, 6),
-            "run_dir": str(run_definition.run_dir.relative_to(self.campaign_dir)),
-            "input_file": str(execution.input_path.relative_to(self.campaign_dir)),
-            "output_file": str(execution.output_path.relative_to(self.campaign_dir)),
-            "initial_xyz": str(execution.initial_xyz_path.relative_to(self.campaign_dir)),
-            "optimized_xyz": (
-                str(execution.optimized_xyz_path.relative_to(self.campaign_dir))
-                if execution.optimized_xyz_path
-                else ""
-            ),
-            "error": execution.error or "",
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-        atomic_write_json(result_path, record)
-        records[run_definition.run_id] = record
-        self._persist_campaign_outputs(records)
-        LOGGER.info(
-            "Completed %s | status=%s energy=%s",
-            run_definition.run_id,
-            execution.status,
-            execution.energy_hartree,
         )
 
     def _persist_campaign_outputs(self, records: dict[str, dict]) -> None:
@@ -111,14 +149,19 @@ class CampaignOrchestrator:
             [
                 "run_id",
                 "stage",
+                "calculation_type",
+                "method",
                 "distance",
+                "multiplicity",
                 "repeat_index",
                 "seed",
+                "source_run_id",
                 "status",
                 "exit_code",
                 "energy_hartree",
                 "terminated_normally",
                 "runtime_seconds",
+                "accuracy_level",
                 "run_dir",
                 "input_file",
                 "output_file",
@@ -154,13 +197,18 @@ class CampaignOrchestrator:
                 "campaign_name": self.config.campaign_name,
                 "status": "ok",
                 "updated_at": datetime.now(UTC).isoformat(),
+                "selection_basis": (
+                    "single_point_energy"
+                    if best_record["calculation_type"] == "single_point"
+                    else "optimization_energy"
+                ),
                 "best_run": best_record,
                 "summary_csv": "summary.csv",
                 "best_xyz": "best.xyz",
             },
         )
 
-    def _build_run_definitions(
+    def _build_optimization_runs(
         self,
         stage: str,
         distances: tuple[float, ...],
@@ -168,22 +216,71 @@ class CampaignOrchestrator:
         seed_offset: int,
     ) -> list[RunDefinition]:
         definitions: list[RunDefinition] = []
-        for distance_index, distance in enumerate(distances):
-            distance_slug = _distance_slug(distance)
-            for repeat_index in range(1, self.config.repeats_per_distance + 1):
-                run_id = f"{stage}-d{distance_slug}-r{repeat_index:02d}"
-                run_dir = self.runs_root / stage / f"d_{distance_slug}" / f"r_{repeat_index:02d}"
-                seed = self.config.base_seed + seed_offset + distance_index * 1000 + repeat_index
-                definitions.append(
-                    RunDefinition(
-                        run_id=run_id,
-                        stage=stage,
-                        distance=distance,
-                        repeat_index=repeat_index,
-                        seed=seed,
-                        run_dir=run_dir,
+        for multiplicity_index, multiplicity in enumerate(self.config.orca.multiplicities):
+            for distance_index, distance in enumerate(distances):
+                distance_slug = _distance_slug(distance)
+                for repeat_index in range(1, self.config.repeats_per_distance + 1):
+                    run_id = (
+                        f"{stage}-m{multiplicity:02d}-d{distance_slug}-r{repeat_index:02d}"
                     )
+                    run_dir = (
+                        self.runs_root
+                        / stage
+                        / f"m_{multiplicity:02d}"
+                        / f"d_{distance_slug}"
+                        / f"r_{repeat_index:02d}"
+                    )
+                    seed = (
+                        self.config.base_seed
+                        + seed_offset
+                        + multiplicity_index * 100000
+                        + distance_index * 1000
+                        + repeat_index
+                    )
+                    definitions.append(
+                        RunDefinition(
+                            run_id=run_id,
+                            stage=stage,
+                            calculation_type="optimization",
+                            method=self.config.orca.method,
+                            extra_blocks="",
+                            distance=distance,
+                            multiplicity=multiplicity,
+                            repeat_index=repeat_index,
+                            seed=seed,
+                            run_dir=run_dir,
+                        )
+                    )
+        return definitions
+
+    def _build_single_point_runs(
+        self, records: dict[str, dict], *, seed_offset: int
+    ) -> list[RunDefinition]:
+        source_records = self._select_top_records(
+            records,
+            calculation_type="optimization",
+            top_n=self.config.single_point.top_n,
+        )
+        definitions: list[RunDefinition] = []
+        for rank, source_record in enumerate(source_records, start=1):
+            source_run_id = str(source_record["run_id"])
+            run_id = f"single-point-r{rank:02d}-{source_run_id}"
+            run_dir = self.runs_root / "single_point" / f"rank_{rank:02d}_{source_run_id}"
+            definitions.append(
+                RunDefinition(
+                    run_id=run_id,
+                    stage="single_point",
+                    calculation_type="single_point",
+                    method=self.config.single_point.method,
+                    extra_blocks=self.config.single_point.extra_blocks,
+                    distance=float(source_record["distance"]),
+                    multiplicity=int(source_record["multiplicity"]),
+                    repeat_index=int(source_record["repeat_index"]),
+                    seed=self.config.base_seed + seed_offset + rank,
+                    run_dir=run_dir,
+                    source_run_id=source_run_id,
                 )
+            )
         return definitions
 
     def _build_refinement_distances(self, center_distance: float) -> tuple[float, ...]:
@@ -217,33 +314,118 @@ class CampaignOrchestrator:
         if not self.runs_root.exists():
             return records
         for result_file in self.runs_root.rglob("result.json"):
-            record = read_json(result_file)
+            record = self._normalize_record(read_json(result_file))
             records[record["run_id"]] = record
         return records
 
+    def _normalize_record(self, record: dict) -> dict:
+        calculation_type = record.get("calculation_type")
+        if not calculation_type:
+            calculation_type = "single_point" if record.get("stage") == "single_point" else "optimization"
+            record["calculation_type"] = calculation_type
+        record.setdefault("method", self.config.single_point.method if calculation_type == "single_point" else self.config.orca.method)
+        record.setdefault("multiplicity", self.config.orca.multiplicities[0])
+        record.setdefault("source_run_id", "")
+        record.setdefault("accuracy_level", self._accuracy_level(calculation_type))
+        return record
+
     def _sorted_records(self, records: dict[str, dict]) -> list[dict]:
-        stage_order = {"coarse": 0, "refine": 1}
+        stage_order = {"coarse": 0, "refine": 1, "single_point": 2}
         return sorted(
             records.values(),
             key=lambda item: (
-                stage_order.get(item["stage"], 99),
+                stage_order.get(str(item["stage"]), 99),
+                int(item.get("multiplicity", 1)),
                 float(item["distance"]),
                 int(item["repeat_index"]),
             ),
         )
 
-    def _select_best_record(self, records: dict[str, dict]) -> dict | None:
+    def _select_best_record(
+        self, records: dict[str, dict], *, calculation_type: str | None = None
+    ) -> dict | None:
         successful = [
-            record
+            self._normalize_record(record.copy())
             for record in records.values()
             if record["status"] == "success" and record["energy_hartree"] is not None
         ]
+        if calculation_type is not None:
+            successful = [
+                record for record in successful if record["calculation_type"] == calculation_type
+            ]
+        elif successful:
+            best_accuracy = max(int(record.get("accuracy_level", 1)) for record in successful)
+            successful = [
+                record for record in successful if int(record.get("accuracy_level", 1)) == best_accuracy
+            ]
+
         if not successful:
             return None
         return min(successful, key=lambda item: float(item["energy_hartree"]))
 
+    def _select_top_records(
+        self, records: dict[str, dict], *, calculation_type: str, top_n: int
+    ) -> list[dict]:
+        successful = [
+            self._normalize_record(record.copy())
+            for record in records.values()
+            if record["status"] == "success" and record["energy_hartree"] is not None
+        ]
+        successful = [record for record in successful if record["calculation_type"] == calculation_type]
+        successful.sort(key=lambda item: float(item["energy_hartree"]))
+        return successful[:top_n]
+
+    def _cleanup_non_best_runs(self, records: dict[str, dict], best_run_id: str) -> None:
+        patterns = self.config.cleanup.delete_non_best_patterns
+        if not patterns:
+            return
+        for record in records.values():
+            if record["status"] != "success" or record["run_id"] == best_run_id:
+                continue
+            self._cleanup_run_artifacts(self.campaign_dir / str(record["run_dir"]), patterns)
+
+    def _cleanup_run_artifacts(self, run_dir: Path, patterns: tuple[str, ...]) -> None:
+        for pattern in patterns:
+            for candidate in run_dir.glob(pattern):
+                if candidate.is_file():
+                    candidate.unlink(missing_ok=True)
+
+    def _build_failed_record(self, run_definition: RunDefinition, error: str) -> dict:
+        return {
+            "run_id": run_definition.run_id,
+            "stage": run_definition.stage,
+            "calculation_type": run_definition.calculation_type,
+            "method": run_definition.method,
+            "distance": run_definition.distance,
+            "multiplicity": run_definition.multiplicity,
+            "repeat_index": run_definition.repeat_index,
+            "seed": run_definition.seed,
+            "source_run_id": run_definition.source_run_id or "",
+            "status": "failed",
+            "exit_code": 1,
+            "energy_hartree": None,
+            "terminated_normally": False,
+            "runtime_seconds": 0.0,
+            "run_dir": str(run_definition.run_dir.relative_to(self.campaign_dir)),
+            "input_file": "",
+            "output_file": "",
+            "initial_xyz": "",
+            "optimized_xyz": "",
+            "error": error,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "accuracy_level": self._accuracy_level(run_definition.calculation_type),
+        }
+
     def _write_config_snapshot(self) -> None:
         atomic_write_json(self.campaign_dir / "campaign_config.json", self.config.to_dict())
+
+    def _relative_path(self, path: Path | None) -> str:
+        if path is None:
+            return ""
+        return str(path.relative_to(self.campaign_dir))
+
+    def _accuracy_level(self, calculation_type: str) -> int:
+        return 2 if calculation_type == "single_point" else 1
 
 
 def configure_logging(campaign_dir: Path) -> None:

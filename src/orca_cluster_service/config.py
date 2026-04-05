@@ -7,7 +7,13 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
-from .models import CampaignConfig, OrcaSettings, RefinementSettings
+from .models import (
+    CampaignConfig,
+    CleanupSettings,
+    OrcaSettings,
+    RefinementSettings,
+    SinglePointSettings,
+)
 
 
 CONFIG_ENV = "CONFIG_PATH"
@@ -73,7 +79,25 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
             "ORCA_METHOD", file_data, ("orca", "method"), "R2SCAN-3C Opt TightSCF", str
         ),
         charge=_read_value("CHARGE", file_data, ("orca", "charge"), 0, int),
-        multiplicity=_read_value("MULTIPLICITY", file_data, ("orca", "multiplicity"), 1, int),
+        multiplicities=tuple(
+            _read_value(
+                "MULTIPLICITIES",
+                file_data,
+                ("orca", "multiplicities"),
+                None,
+                _parse_int_list,
+                allow_none=True,
+            )
+            or (
+                _read_value(
+                    "MULTIPLICITY",
+                    file_data,
+                    ("orca", "multiplicity"),
+                    (1,),
+                    _parse_int_list,
+                )
+            )
+        ),
         processes=_read_value("ORCA_PROCESSES", file_data, ("orca", "processes"), 2, int),
         maxcore_mb=_read_value("ORCA_MAXCORE_MB", file_data, ("orca", "maxcore_mb"), 1500, int),
         geom_max_iterations=_read_value(
@@ -84,6 +108,9 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
         ),
         mock_optimal_distance=_read_value(
             "MOCK_OPTIMAL_DISTANCE", file_data, ("mock", "optimal_distance"), 2.45, float
+        ),
+        mock_optimal_multiplicity=_read_value(
+            "MOCK_OPTIMAL_MULTIPLICITY", file_data, ("mock", "optimal_multiplicity"), 1, int
         ),
         mock_base_energy=_read_value(
             "MOCK_BASE_ENERGY", file_data, ("mock", "base_energy"), -24.0, float
@@ -104,6 +131,50 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
         ),
         points=_read_value("REFINE_POINTS", file_data, ("refinement", "points"), 2, int),
     )
+    single_point_settings = SinglePointSettings(
+        enabled=_read_value(
+            "SINGLE_POINT_ENABLED",
+            file_data,
+            ("single_point", "enabled"),
+            True,
+            _parse_bool,
+        ),
+        top_n=_read_value("SINGLE_POINT_TOP_N", file_data, ("single_point", "top_n"), 3, int),
+        method=_read_value(
+            "SINGLE_POINT_METHOD",
+            file_data,
+            ("single_point", "method"),
+            "PBE0 D4 def2-TZVP def2/J RIJCOSX TightSCF",
+            str,
+        ),
+        extra_blocks=_read_value(
+            "SINGLE_POINT_EXTRA_BLOCKS",
+            file_data,
+            ("single_point", "extra_blocks"),
+            "",
+            str,
+        ),
+    )
+    cleanup_settings = CleanupSettings(
+        delete_patterns_after_success=tuple(
+            _read_value(
+                "DELETE_PATTERNS_AFTER_SUCCESS",
+                file_data,
+                ("cleanup", "delete_patterns_after_success"),
+                CleanupSettings.delete_patterns_after_success,
+                _parse_string_list,
+            )
+        ),
+        delete_non_best_patterns=tuple(
+            _read_value(
+                "DELETE_NON_BEST_PATTERNS",
+                file_data,
+                ("cleanup", "delete_non_best_patterns"),
+                (),
+                _parse_string_list,
+            )
+        ),
+    )
 
     if num_atoms <= 0:
         raise ValueError("NUM_ATOMS must be positive.")
@@ -111,6 +182,10 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
         raise ValueError("REPEATS_PER_DISTANCE must be positive.")
     if not distances:
         raise ValueError("At least one distance must be provided.")
+    if not orca_settings.multiplicities:
+        raise ValueError("At least one multiplicity must be provided.")
+    if single_point_settings.top_n <= 0:
+        raise ValueError("SINGLE_POINT_TOP_N must be positive.")
 
     return CampaignConfig(
         campaign_name=campaign_name,
@@ -127,6 +202,8 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
         force_rerun=force_rerun,
         orca=orca_settings,
         refinement=refinement_settings,
+        single_point=single_point_settings,
+        cleanup=cleanup_settings,
     )
 
 
@@ -176,6 +253,20 @@ def _parse_distances(value: Any) -> tuple[float, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(float(item) for item in value)
     return tuple(float(part.strip()) for part in str(value).split(",") if part.strip())
+
+
+def _parse_int_list(value: Any) -> tuple[int, ...]:
+    if isinstance(value, int):
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        return tuple(int(item) for item in value)
+    return tuple(int(part.strip()) for part in str(value).split(",") if part.strip())
+
+
+def _parse_string_list(value: Any) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return tuple(part.strip() for part in str(value).split(",") if part.strip())
 
 
 def _parse_bool(value: Any) -> bool:
