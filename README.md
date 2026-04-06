@@ -24,6 +24,7 @@ Containerized service for automated ORCA geometry optimization campaigns on a 12
 ## Configuration
 
 The service accepts a TOML or JSON config file plus environment-variable overrides.
+The default repository config is mock-first for safe local runs and CI; the production runtime image overrides `ORCA_BACKEND=real`.
 
 Main environment variables:
 
@@ -90,6 +91,13 @@ For CI and development without ORCA, use:
 docker build --target mock-runtime -t orca-b12:mock .
 ```
 
+For a real production run from the licensed runtime image, set:
+
+```bash
+export ORCA_BACKEND=real
+export ORCA_BINARY=/opt/orca/orca
+```
+
 ## Outputs
 
 Each campaign writes into `RESULTS_ROOT/CAMPAIGN_NAME/`:
@@ -118,7 +126,7 @@ Each run directory contains:
 
 ## GitHub Actions
 
-Workflow file: `.github/workflows/ci.yml`
+Workflow file: `.github/workflows/docker-image.yml`
 
 The workflow always:
 
@@ -144,6 +152,7 @@ Recommended production path:
 5. Set service variables such as:
    - `RESULTS_ROOT=/app/data`
    - `CAMPAIGN_NAME=b12-production`
+   - `ORCA_BACKEND=real`
    - `ORCA_BINARY=/opt/orca/orca`
    - `MULTIPLICITIES=1,3,5`
 6. Redeploy after changing configuration.

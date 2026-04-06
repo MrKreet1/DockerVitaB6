@@ -73,7 +73,7 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
     force_rerun = _read_value("FORCE_RERUN", file_data, ("force_rerun",), False, _parse_bool)
 
     orca_settings = OrcaSettings(
-        backend=_read_value("ORCA_BACKEND", file_data, ("orca", "backend"), "real", str).lower(),
+        backend=_read_value("ORCA_BACKEND", file_data, ("orca", "backend"), "mock", str).lower(),
         binary=_read_value("ORCA_BINARY", file_data, ("orca", "binary"), "orca", str),
         method=_read_value(
             "ORCA_METHOD", file_data, ("orca", "method"), "R2SCAN-3C Opt TightSCF", str

@@ -50,7 +50,8 @@ COPY vendor/orca/ /opt/orca/
 RUN test -x /opt/orca/orca \
     && mkdir -p /app/data
 
-ENV ORCA_BINARY=/opt/orca/orca \
+ENV ORCA_BACKEND=real \
+    ORCA_BINARY=/opt/orca/orca \
     RESULTS_ROOT=/app/data \
     PATH="/opt/orca:/opt/venv/bin:${PATH}"
 
