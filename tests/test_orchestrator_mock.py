@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from orca_cluster_service.models import (
     CampaignConfig,
     CleanupSettings,
+    FrequencySettings,
     OrcaSettings,
     RefinementSettings,
     SinglePointSettings,
@@ -56,6 +57,13 @@ class MockCampaignTests(unittest.TestCase):
                     mock_noise_scale=0.0,
                 ),
                 refinement=RefinementSettings(enabled=True, step=0.1, points=1),
+                frequency=FrequencySettings(
+                    enabled=True,
+                    top_n=2,
+                    method="R2SCAN-3C NumFreq TightSCF",
+                    extra_blocks="",
+                    min_allowed_frequency_cm1=0.0,
+                ),
                 single_point=SinglePointSettings(
                     enabled=True,
                     top_n=2,
@@ -82,14 +90,17 @@ class MockCampaignTests(unittest.TestCase):
 
                 with summary_path.open("r", encoding="utf-8", newline="") as handle:
                     rows = list(csv.DictReader(handle))
-                self.assertEqual(len(rows), 44)
+                self.assertEqual(len(rows), 46)
+                self.assertIn("frequency", {row["calculation_type"] for row in rows})
+                self.assertIn("single_point", {row["calculation_type"] for row in rows})
 
                 payload = json.loads(best_json_path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["status"], "ok")
                 self.assertEqual(payload["selection_basis"], "single_point_energy")
                 self.assertEqual(payload["best_run"]["calculation_type"], "single_point")
                 self.assertEqual(payload["best_run"]["multiplicity"], 3)
-                self.assertIn(payload["best_run"]["distance"], {2.4, 2.6})
+                self.assertTrue(payload["best_run"]["frequency_check_passed"])
+                self.assertEqual(payload["best_run"]["distance"], 2.4)
             finally:
                 close_logging()
 

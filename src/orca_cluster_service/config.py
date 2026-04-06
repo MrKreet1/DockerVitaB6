@@ -10,6 +10,7 @@ from typing import Any, Callable
 from .models import (
     CampaignConfig,
     CleanupSettings,
+    FrequencySettings,
     OrcaSettings,
     RefinementSettings,
     SinglePointSettings,
@@ -131,6 +132,37 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
         ),
         points=_read_value("REFINE_POINTS", file_data, ("refinement", "points"), 2, int),
     )
+    frequency_settings = FrequencySettings(
+        enabled=_read_value(
+            "FREQUENCY_ENABLED",
+            file_data,
+            ("frequency", "enabled"),
+            True,
+            _parse_bool,
+        ),
+        top_n=_read_value("FREQUENCY_TOP_N", file_data, ("frequency", "top_n"), 3, int),
+        method=_read_value(
+            "FREQUENCY_METHOD",
+            file_data,
+            ("frequency", "method"),
+            "R2SCAN-3C NumFreq TightSCF",
+            str,
+        ),
+        extra_blocks=_read_value(
+            "FREQUENCY_EXTRA_BLOCKS",
+            file_data,
+            ("frequency", "extra_blocks"),
+            "",
+            str,
+        ),
+        min_allowed_frequency_cm1=_read_value(
+            "MIN_ALLOWED_FREQUENCY_CM1",
+            file_data,
+            ("frequency", "min_allowed_frequency_cm1"),
+            0.0,
+            float,
+        ),
+    )
     single_point_settings = SinglePointSettings(
         enabled=_read_value(
             "SINGLE_POINT_ENABLED",
@@ -184,6 +216,8 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
         raise ValueError("At least one distance must be provided.")
     if not orca_settings.multiplicities:
         raise ValueError("At least one multiplicity must be provided.")
+    if frequency_settings.top_n <= 0:
+        raise ValueError("FREQUENCY_TOP_N must be positive.")
     if single_point_settings.top_n <= 0:
         raise ValueError("SINGLE_POINT_TOP_N must be positive.")
 
@@ -202,6 +236,7 @@ def load_config(config_path: str | Path | None = None) -> CampaignConfig:
         force_rerun=force_rerun,
         orca=orca_settings,
         refinement=refinement_settings,
+        frequency=frequency_settings,
         single_point=single_point_settings,
         cleanup=cleanup_settings,
     )

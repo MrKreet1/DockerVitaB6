@@ -95,6 +95,7 @@ class RealOrcaRunner(BaseRunner):
             optimized_xyz_path=optimized_xyz,
             terminated_normally=parse_result.terminated_normally,
             runtime_seconds=runtime_seconds,
+            frequencies_cm1=parse_result.frequencies_cm1,
         )
 
     def _resolve_binary(self) -> str:
@@ -135,7 +136,11 @@ class MockOrcaRunner(BaseRunner):
         energy = self._mock_energy(run_definition)
         optimized_geometry = self._mock_relax_geometry(coordinates)
         output_path.write_text(
-            self._render_mock_output(optimized_geometry, energy),
+            self._render_mock_output(
+                optimized_geometry,
+                energy,
+                frequencies_cm1=self._mock_frequencies(run_definition),
+            ),
             encoding="utf-8",
         )
         write_xyz(optimized_xyz_path, optimized_geometry, f"Optimized geometry for {run_definition.run_id}")
@@ -153,6 +158,7 @@ class MockOrcaRunner(BaseRunner):
             optimized_xyz_path=optimized_xyz_path,
             terminated_normally=parse_result.terminated_normally,
             runtime_seconds=runtime_seconds,
+            frequencies_cm1=parse_result.frequencies_cm1,
         )
 
     def _mock_energy(self, run_definition: RunDefinition) -> float:
@@ -187,8 +193,23 @@ class MockOrcaRunner(BaseRunner):
             )
         return relaxed
 
+    def _mock_frequencies(self, run_definition: RunDefinition) -> tuple[float, ...]:
+        if run_definition.calculation_type != "frequency":
+            return ()
+        deviation = abs(run_definition.distance - self.orca_settings.mock_optimal_distance)
+        multiplicity_match = (
+            run_definition.multiplicity == self.orca_settings.mock_optimal_multiplicity
+        )
+        if multiplicity_match and deviation <= 0.12:
+            return (18.5, 42.0, 88.2, 127.4)
+        return (-35.0, 22.0, 77.0, 131.0)
+
     def _render_mock_output(
-        self, coordinates: list[AtomCoordinate], energy_hartree: float
+        self,
+        coordinates: list[AtomCoordinate],
+        energy_hartree: float,
+        *,
+        frequencies_cm1: tuple[float, ...],
     ) -> str:
         lines = [
             "-----------------------------",
@@ -196,11 +217,27 @@ class MockOrcaRunner(BaseRunner):
             "-----------------------------",
             *(atom.to_xyz_line() for atom in coordinates),
             "",
+        ]
+        if frequencies_cm1:
+            lines.extend(
+                [
+                    "VIBRATIONAL FREQUENCIES",
+                    "-----------------------",
+                    *(
+                        f"{index:>6d}: {frequency: .2f} cm**-1"
+                        for index, frequency in enumerate(frequencies_cm1, start=1)
+                    ),
+                    "",
+                ]
+            )
+        lines.extend(
+            [
             f"FINAL SINGLE POINT ENERGY     {energy_hartree: .12f}",
             "",
             "****ORCA TERMINATED NORMALLY****",
             "",
-        ]
+            ]
+        )
         return "\n".join(lines)
 
 

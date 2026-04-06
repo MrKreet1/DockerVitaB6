@@ -49,6 +49,10 @@ Main environment variables:
 - `REFINE_ENABLED`
 - `REFINE_STEP`
 - `REFINE_POINTS`
+- `FREQUENCY_ENABLED`
+- `FREQUENCY_TOP_N`
+- `FREQUENCY_METHOD`
+- `MIN_ALLOWED_FREQUENCY_CM1`
 - `SINGLE_POINT_ENABLED`
 - `SINGLE_POINT_TOP_N`
 - `SINGLE_POINT_METHOD`
@@ -120,9 +124,30 @@ Each run directory contains:
 `summary.csv` also includes:
 
 - `multiplicity`
-- `calculation_type` (`optimization` or `single_point`)
+- `calculation_type` (`optimization`, `frequency`, or `single_point`)
 - `method`
 - `source_run_id` for single-point jobs
+- `minimum_frequency_cm1`
+- `imaginary_frequency_count`
+- `frequency_check_passed`
+
+## No Imaginary Frequencies
+
+If `frequency.enabled = true`, the service inserts a separate frequency-verification stage after optimization and before final high-accuracy single-point evaluation.
+
+- only structures that pass the frequency check are allowed into the final `single_point` stage
+- if no structure passes the frequency check, the campaign does not report a best minimum
+- `min_allowed_frequency_cm1 = 0.0` means strictly no imaginary frequencies
+
+Example:
+
+```toml
+[frequency]
+enabled = true
+top_n = 3
+method = "R2SCAN-3C NumFreq TightSCF"
+min_allowed_frequency_cm1 = 0.0
+```
 
 ## GitHub Actions
 

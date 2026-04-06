@@ -58,6 +58,18 @@ class SinglePointSettings:
 
 
 @dataclass(frozen=True)
+class FrequencySettings:
+    enabled: bool = True
+    top_n: int = 3
+    method: str = "R2SCAN-3C NumFreq TightSCF"
+    extra_blocks: str = ""
+    min_allowed_frequency_cm1: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class CleanupSettings:
     delete_patterns_after_success: tuple[str, ...] = (
         "*.tmp",
@@ -93,6 +105,7 @@ class CampaignConfig:
     force_rerun: bool
     orca: OrcaSettings
     refinement: RefinementSettings
+    frequency: FrequencySettings
     single_point: SinglePointSettings
     cleanup: CleanupSettings
 
@@ -130,6 +143,7 @@ class ParseResult:
     terminated_normally: bool
     energy_hartree: float | None
     geometry: list[AtomCoordinate]
+    frequencies_cm1: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -144,3 +158,4 @@ class RunExecution:
     optimized_xyz_path: Path | None
     terminated_normally: bool
     runtime_seconds: float
+    frequencies_cm1: tuple[float, ...]

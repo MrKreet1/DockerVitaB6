@@ -37,8 +37,13 @@ class CampaignOrchestrator:
             ):
                 self._execute_run(run_definition, records)
 
+        if self.config.frequency.enabled:
+            for run_definition in self._build_frequency_runs(records, seed_offset=200000):
+                self._execute_run(run_definition, records)
+
         if self.config.single_point.enabled:
-            for run_definition in self._build_single_point_runs(records, seed_offset=200000):
+            single_point_seed_offset = 300000 if self.config.frequency.enabled else 200000
+            for run_definition in self._build_single_point_runs(records, seed_offset=single_point_seed_offset):
                 self._execute_run(run_definition, records)
 
         self._persist_campaign_outputs(records)
@@ -87,6 +92,17 @@ class CampaignOrchestrator:
                 "status": execution.status,
                 "exit_code": execution.exit_code,
                 "energy_hartree": execution.energy_hartree,
+                "minimum_frequency_cm1": (
+                    min(execution.frequencies_cm1) if execution.frequencies_cm1 else None
+                ),
+                "imaginary_frequency_count": sum(
+                    1 for frequency in execution.frequencies_cm1 if frequency < 0.0
+                ),
+                "frequency_check_passed": self._frequency_check_passed(
+                    run_definition,
+                    execution.frequencies_cm1,
+                    records,
+                ),
                 "terminated_normally": execution.terminated_normally,
                 "runtime_seconds": round(execution.runtime_seconds, 6),
                 "run_dir": str(run_definition.run_dir.relative_to(self.campaign_dir)),
@@ -159,6 +175,9 @@ class CampaignOrchestrator:
                 "status",
                 "exit_code",
                 "energy_hartree",
+                "minimum_frequency_cm1",
+                "imaginary_frequency_count",
+                "frequency_check_passed",
                 "terminated_normally",
                 "runtime_seconds",
                 "accuracy_level",
@@ -200,6 +219,8 @@ class CampaignOrchestrator:
                 "selection_basis": (
                     "single_point_energy"
                     if best_record["calculation_type"] == "single_point"
+                    else "frequency_verified_energy"
+                    if best_record["calculation_type"] == "frequency"
                     else "optimization_energy"
                 ),
                 "best_run": best_record,
@@ -258,7 +279,7 @@ class CampaignOrchestrator:
     ) -> list[RunDefinition]:
         source_records = self._select_top_records(
             records,
-            calculation_type="optimization",
+            calculation_type="frequency" if self.config.frequency.enabled else "optimization",
             top_n=self.config.single_point.top_n,
         )
         definitions: list[RunDefinition] = []
@@ -273,6 +294,36 @@ class CampaignOrchestrator:
                     calculation_type="single_point",
                     method=self.config.single_point.method,
                     extra_blocks=self.config.single_point.extra_blocks,
+                    distance=float(source_record["distance"]),
+                    multiplicity=int(source_record["multiplicity"]),
+                    repeat_index=int(source_record["repeat_index"]),
+                    seed=self.config.base_seed + seed_offset + rank,
+                    run_dir=run_dir,
+                    source_run_id=source_run_id,
+                )
+            )
+        return definitions
+
+    def _build_frequency_runs(
+        self, records: dict[str, dict], *, seed_offset: int
+    ) -> list[RunDefinition]:
+        source_records = self._select_top_records(
+            records,
+            calculation_type="optimization",
+            top_n=self.config.frequency.top_n,
+        )
+        definitions: list[RunDefinition] = []
+        for rank, source_record in enumerate(source_records, start=1):
+            source_run_id = str(source_record["run_id"])
+            run_id = f"frequency-r{rank:02d}-{source_run_id}"
+            run_dir = self.runs_root / "frequency" / f"rank_{rank:02d}_{source_run_id}"
+            definitions.append(
+                RunDefinition(
+                    run_id=run_id,
+                    stage="frequency",
+                    calculation_type="frequency",
+                    method=self.config.frequency.method,
+                    extra_blocks=self.config.frequency.extra_blocks,
                     distance=float(source_record["distance"]),
                     multiplicity=int(source_record["multiplicity"]),
                     repeat_index=int(source_record["repeat_index"]),
@@ -323,14 +374,25 @@ class CampaignOrchestrator:
         if not calculation_type:
             calculation_type = "single_point" if record.get("stage") == "single_point" else "optimization"
             record["calculation_type"] = calculation_type
-        record.setdefault("method", self.config.single_point.method if calculation_type == "single_point" else self.config.orca.method)
+        if record.get("stage") == "frequency":
+            record["calculation_type"] = "frequency"
+            calculation_type = "frequency"
+        default_method = self.config.orca.method
+        if calculation_type == "frequency":
+            default_method = self.config.frequency.method
+        if calculation_type == "single_point":
+            default_method = self.config.single_point.method
+        record.setdefault("method", default_method)
         record.setdefault("multiplicity", self.config.orca.multiplicities[0])
         record.setdefault("source_run_id", "")
         record.setdefault("accuracy_level", self._accuracy_level(calculation_type))
+        record.setdefault("minimum_frequency_cm1", None)
+        record.setdefault("imaginary_frequency_count", None)
+        record.setdefault("frequency_check_passed", None)
         return record
 
     def _sorted_records(self, records: dict[str, dict]) -> list[dict]:
-        stage_order = {"coarse": 0, "refine": 1, "single_point": 2}
+        stage_order = {"coarse": 0, "refine": 1, "frequency": 2, "single_point": 3}
         return sorted(
             records.values(),
             key=lambda item: (
@@ -353,7 +415,35 @@ class CampaignOrchestrator:
             successful = [
                 record for record in successful if record["calculation_type"] == calculation_type
             ]
+            if calculation_type == "frequency":
+                successful = [
+                    record for record in successful if record.get("frequency_check_passed") is True
+                ]
+            if calculation_type == "single_point" and self.config.frequency.enabled:
+                successful = [
+                    record for record in successful if record.get("frequency_check_passed") is True
+                ]
         elif successful:
+            if self.config.frequency.enabled:
+                has_frequency_records = any(
+                    self._normalize_record(record.copy())["calculation_type"] == "frequency"
+                    for record in records.values()
+                )
+                if has_frequency_records:
+                    successful = [
+                        record
+                        for record in successful
+                        if (
+                            record["calculation_type"] == "single_point"
+                            and record.get("frequency_check_passed") is True
+                        )
+                        or (
+                            record["calculation_type"] == "frequency"
+                            and record.get("frequency_check_passed") is True
+                        )
+                    ]
+                    if not successful:
+                        return None
             best_accuracy = max(int(record.get("accuracy_level", 1)) for record in successful)
             successful = [
                 record for record in successful if int(record.get("accuracy_level", 1)) == best_accuracy
@@ -372,6 +462,8 @@ class CampaignOrchestrator:
             if record["status"] == "success" and record["energy_hartree"] is not None
         ]
         successful = [record for record in successful if record["calculation_type"] == calculation_type]
+        if calculation_type == "frequency":
+            successful = [record for record in successful if record.get("frequency_check_passed") is True]
         successful.sort(key=lambda item: float(item["energy_hartree"]))
         return successful[:top_n]
 
@@ -404,6 +496,9 @@ class CampaignOrchestrator:
             "status": "failed",
             "exit_code": 1,
             "energy_hartree": None,
+            "minimum_frequency_cm1": None,
+            "imaginary_frequency_count": None,
+            "frequency_check_passed": None,
             "terminated_normally": False,
             "runtime_seconds": 0.0,
             "run_dir": str(run_definition.run_dir.relative_to(self.campaign_dir)),
@@ -425,7 +520,27 @@ class CampaignOrchestrator:
         return str(path.relative_to(self.campaign_dir))
 
     def _accuracy_level(self, calculation_type: str) -> int:
-        return 2 if calculation_type == "single_point" else 1
+        if calculation_type == "single_point":
+            return 3
+        if calculation_type == "frequency":
+            return 2
+        return 1
+
+    def _frequency_check_passed(
+        self,
+        run_definition: RunDefinition,
+        frequencies_cm1: tuple[float, ...],
+        records: dict[str, dict],
+    ) -> bool | None:
+        if run_definition.calculation_type == "frequency":
+            if not frequencies_cm1:
+                return False
+            return min(frequencies_cm1) >= self.config.frequency.min_allowed_frequency_cm1
+        if run_definition.calculation_type == "single_point" and run_definition.source_run_id:
+            source_record = records.get(run_definition.source_run_id)
+            if source_record is not None:
+                return source_record.get("frequency_check_passed")
+        return None
 
 
 def configure_logging(campaign_dir: Path) -> None:

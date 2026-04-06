@@ -7,6 +7,7 @@ from .models import AtomCoordinate, ParseResult
 
 
 ENERGY_PATTERN = re.compile(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+(?:[Ee][+-]?\d+)?)")
+FREQUENCY_PATTERN = re.compile(r"^\s*\d+\s*:\s*(-?\d+\.\d+)\s*cm\*\*-1", re.MULTILINE)
 ELEMENT_PATTERN = re.compile(r"^[A-Z][a-z]?$")
 
 
@@ -14,12 +15,14 @@ def parse_orca_output(path: Path) -> ParseResult:
     text = path.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
     energies = [float(match.group(1)) for match in ENERGY_PATTERN.finditer(text)]
+    frequencies = tuple(float(match.group(1)) for match in FREQUENCY_PATTERN.finditer(text))
     geometry = _extract_last_geometry(lines)
     terminated_normally = "ORCA TERMINATED NORMALLY" in text
     return ParseResult(
         terminated_normally=terminated_normally,
         energy_hartree=energies[-1] if energies else None,
         geometry=geometry,
+        frequencies_cm1=frequencies,
     )
 
 

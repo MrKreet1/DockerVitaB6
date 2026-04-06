@@ -28,6 +28,13 @@ enabled = true
 step = 0.1
 points = 2
 
+[frequency]
+enabled = true
+top_n = 3
+method = "R2SCAN-3C NumFreq TightSCF"
+extra_blocks = ""
+min_allowed_frequency_cm1 = 0.0
+
 [mock]
 optimal_distance = 2.45
 optimal_multiplicity = 1
